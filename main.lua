@@ -1,183 +1,111 @@
---=== AUTO FARM WITH UI + LOGGER ===--
-
--- Services
+-- // Service & Player Setup
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-
--- Player refs
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
-local humanoid = character:WaitForChild("Humanoid")
 local hrp = character:WaitForChild("HumanoidRootPart")
-local playerGui = player:WaitForChild("PlayerGui")
 
---=== Logger ===--
-local function debugLog(msg)
-    print("[AUTO FARM DEBUG]: " .. msg)
+-- // Ambil remote dari Plastic Pan
+local pan = character:WaitForChild("Plastic Pan")
+local scripts = pan:WaitForChild("Scripts")
+local Toggle = scripts:WaitForChild("ToggleShovelActive")
+local Collect = scripts:WaitForChild("Collect")
+
+-- // Variabel AutoFarm
+local savedPositions = { Sand = {}, River = nil }
+local autoFarm = false
+local farmingCoroutine
+
+-- // Fungsi Remote
+local function startDig() Toggle:FireServer(true) end
+local function stopDig() Toggle:FireServer(false) end
+
+local function collectSand()
+    -- Call Collect tanpa argumen
+    Collect:InvokeServer()
+    -- Jika perlu versi argumen: Collect:InvokeServer(1)
 end
 
-local function errorLog(context, err)
-    warn("[AUTO FARM ERROR][" .. context .. "]: " .. err)
-end
-
---=== State ===--
-local state = {
-    locations = { Sand = {}, River = nil },
-    autoFarm = false,
-    coroutine = nil,
-}
-
---=== UI Element Check ===--
-local miniGameBar
-local panProgressUI
-
--- Tunggu UI, kalau tidak ada beri warning
-pcall(function()
-    miniGameBar = playerGui:WaitForChild("MiniGameBar", 5)
-end)
-pcall(function()
-    panProgressUI = playerGui:WaitForChild("PanProgress", 5)
-end)
-
-if not miniGameBar or not panProgressUI then
-    warn("MiniGameBar atau PanProgress tidak ditemukan. Pastikan nama sesuai.")
-end
-
---=== Helper Functions ===--
-
--- Tekan tombol gunakan
-local function triggerAction()
-    pcall(function()
-        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-        task.wait(math.random(50, 120) / 1000)
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-    end)
-end
-
--- Ambil progress panci (contoh "6/10")
-local function getPanProgress()
-    local text = panProgressUI and panProgressUI.Text or "0/10"
-    local cur, max = text:match("(%d+)/(%d+)")
-    return tonumber(cur) or 0, tonumber(max) or 10
-end
-
--- Jalan ke target dengan random offset
-local function smartWalkTo(pos)
-    if not pos then return end
-    local target = pos + Vector3.new(math.random(-2,2),0,math.random(-2,2))
+-- // Fungsi Movement
+local function smartWalkTo(target)
+    if not target then return end
+    local humanoid = character:WaitForChild("Humanoid")
     humanoid:MoveTo(target)
-    repeat
-        task.wait(0.1)
-    until (hrp.Position - target).Magnitude < 4
+    repeat task.wait(0.1) until (hrp.Position - target).Magnitude < 4
 end
 
--- Main mini-game timing
-local function handleMiniGame()
-    if miniGameBar and miniGameBar.Bar.Visible and miniGameBar.Bar.FillColor == Color3.fromRGB(0,255,0) then
-        if math.random() < 0.8 then
-            task.wait(math.random(70,130)/1000)
-        else
-            task.wait(math.random(150,250)/1000)
-        end
-        triggerAction()
-    end
-end
-
--- Isi panci hingga penuh
-local function fillPan()
-    local cur, max = getPanProgress()
-    while cur < max do
-        triggerAction() -- scoop
-        repeat
-            handleMiniGame()
-            task.wait(0.05)
-        until not (miniGameBar and miniGameBar.Bar.Visible)
-        cur, max = getPanProgress()
-        task.wait(math.random(120,300)/1000)
-    end
-end
-
--- Kosongkan panci di sungai
-local function emptyPan()
-    local cur, max = getPanProgress()
-    while cur > 0 do
-        triggerAction()
-        cur, max = getPanProgress()
-        task.wait(math.random(120,250)/1000)
-    end
-end
-
--- Farming loop
+-- // Loop Farming
 local function farmLoop()
-    while state.autoFarm do
-        if #state.locations.Sand > 0 and state.locations.River then
-            local sand = state.locations.Sand[math.random(1,#state.locations.Sand)]
-            debugLog("Pindah ke lokasi Sand")
-            smartWalkTo(sand)
-            safeCall(fillPan, "fillPan")
+    while autoFarm do
+        if #savedPositions.Sand > 0 and savedPositions.River then
+            -- Ambil salah satu posisi pasir random
+            local sandPos = savedPositions.Sand[math.random(1,#savedPositions.Sand)]
+            smartWalkTo(sandPos)
 
-            debugLog("Pindah ke lokasi River")
-            smartWalkTo(state.locations.River)
-            safeCall(emptyPan, "emptyPan")
+            startDig()
+            for i=1,10 do
+                collectSand()
+                task.wait(math.random(150,250)/1000)
+            end
+            stopDig()
 
-            -- Random idle
-            if math.random() < 0.3 then
-                task.wait(math.random(1,3))
+            smartWalkTo(savedPositions.River)
+            for i=1,10 do
+                collectSand()
+                task.wait(math.random(120,200)/1000)
             end
         else
-            debugLog("Lokasi belum disimpan. Tunggu...")
             task.wait(1)
         end
     end
 end
 
--- Jalankan coroutine farming
-local function toggleFarm()
-    state.autoFarm = not state.autoFarm
-    if state.autoFarm and not state.coroutine then
-        debugLog("AutoFarm dimulai")
-        state.coroutine = coroutine.wrap(farmLoop)
-        state.coroutine()
-    else
-        debugLog("AutoFarm berhenti")
-        state.coroutine = nil
+-- // Toggle Farming
+local function toggleAutoFarm()
+    autoFarm = not autoFarm
+    if autoFarm and not farmingCoroutine then
+        farmingCoroutine = coroutine.wrap(farmLoop)
+        farmingCoroutine()
     end
 end
 
---=== UI ===--
+-- // UI Setup
 local screenGui = Instance.new("ScreenGui")
-screenGui.Parent = playerGui
+screenGui.Parent = game.CoreGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 140, 0, 180)
+frame.Position = UDim2.new(0, 20, 0.5, -90) -- kiri tengah
+frame.BackgroundColor3 = Color3.fromRGB(35,35,35)
+frame.Parent = screenGui
 
 local function createButton(text, y, callback)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0,120,0,30)
-    btn.Position = UDim2.new(0,10,0.5,y) -- Tengah kiri
+    btn.Size = UDim2.new(0, 120, 0, 30)
+    btn.Position = UDim2.new(0.5, -60, 0, y)
     btn.Text = text
-    btn.BackgroundColor3 = Color3.fromRGB(40,40,40)
+    btn.BackgroundColor3 = Color3.fromRGB(60,60,60)
     btn.TextColor3 = Color3.new(1,1,1)
-    btn.Parent = screenGui
+    btn.Parent = frame
     btn.MouseButton1Click:Connect(callback)
 end
 
-createButton("Save Sand 1", -60, function()
-    state.locations.Sand[1] = hrp.Position
-    debugLog("Sand 1 tersimpan")
+-- Tombol Save Posisi Pasir 1
+createButton("Save Sand 1", 20, function()
+    savedPositions.Sand[1] = hrp.Position
+    print("Sand 1 saved:", hrp.Position)
 end)
-createButton("Save Sand 2", -20, function()
-    state.locations.Sand[2] = hrp.Position
-    debugLog("Sand 2 tersimpan")
-end)
-createButton("Save River", 20, function()
-    state.locations.River = hrp.Position
-    debugLog("River tersimpan")
-end)
-createButton("Toggle AutoFarm", 60, toggleFarm)
 
---=== SafeCall Wrapper ===--
-function safeCall(func, context)
-    local ok, err = pcall(func)
-    if not ok then
-        errorLog(context or "unknown", err)
-    end
-end
+-- Tombol Save Posisi Pasir 2
+createButton("Save Sand 2", 60, function()
+    savedPositions.Sand[2] = hrp.Position
+    print("Sand 2 saved:", hrp.Position)
+end)
+
+-- Tombol Save Posisi River
+createButton("Save River", 100, function()
+    savedPositions.River = hrp.Position
+    print("River saved:", hrp.Position)
+end)
+
+-- Tombol Toggle AutoFarm
+createButton("Toggle AutoFarm", 140, toggleAutoFarm)
